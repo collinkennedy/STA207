@@ -1,0 +1,546 @@
+---
+title: "An Interrupted Time Series Analysis"
+subtitle: "for the Evaluation of Vaccine Introduction in Affecting New Deaths in the United States"
+author:
+- name: Collin Kennedy
+  affiliation: University of California, Davis
+date: "March 3, 2022"
+output:
+  html_document:
+    df_print: paged
+description: |
+  for the Evaluation of Vaccine Introduction in Affecting New Deaths in the United States
+---
+
+
+
+
+
+```{r include=FALSE}
+library(radix)
+library(tidyverse)
+library(forecast)
+options(scipen = 100)
+library(skimr)
+library(ggpmisc)
+library(stringr)
+library(httr)
+library(rvest)
+library(lubridate)
+library(sandwich)#for
+library(lmtest)#NeweyWest robust standard errors
+library(pander)
+library(ggthemes)
+library(tsModel)
+library(car)
+library(scales)
+library(lme4)
+library(stargazer)
+library(gridExtra)
+#import WHO data, calculate case rate, death rate, and case fatality rate
+covid_data <- read_csv("https://covid19.who.int/WHO-COVID-19-global-data.csv")
+wb_classifications = readxl::read_xlsx("CLASS.xlsx")
+population <- read.csv('country_population_data.csv', header = T)
+covid_data$Date_reported <- as.Date(covid_data$Date_reported)
+covid_data$Country <- replace(covid_data$Country, covid_data$Country == 'United States of America', 'United States')
+population <- read.csv('country_population_data.csv', header = T)
+population <- population %>% select(Country.Name, X2020)
+colnames(population)[1] <- 'Country'
+colnames(population)[2] <- 'Population'
+
+
+#df dataset
+df <- inner_join(covid_data, population, by = 'Country')
+df$case_rate <- (df$Cumulative_cases / df$Population) * 100000
+df$death_rate <- (df$Cumulative_deaths / df$Population) * 100000
+#case fatality rate
+df = df %>% 
+  mutate(case_fatality_rate = Cumulative_deaths/Cumulative_cases)
+
+dim(df %>% filter(Country == "United States"))
+
+covid_vax_data = df %>% 
+  filter(Country == "United States") %>% 
+  filter(Date_reported <= "2022-02-17") %>% 
+  mutate(vaccine_period_3 = ifelse(Date_reported <= (lubridate::ymd("2020-12-14") + lubridate::days(21)),0,1)) %>% 
+  mutate(vaccine_period_5 = ifelse(Date_reported <= (lubridate::ymd("2020-12-14") + lubridate::days(35)),0,1)) %>% 
+  mutate(vaccine_period_5 = as.factor(vaccine_period_5)) %>%
+  mutate(case_fatality_rate = case_when(
+    case_fatality_rate == "NaN" ~ 0,
+    TRUE ~ case_fatality_rate
+  )) %>% 
+  mutate(t = seq(0,776, by = 1)) %>% 
+  mutate(week = week(Date_reported)) %>% 
+  mutate(month = month(Date_reported)) %>% 
+  mutate(daily_death_rate = (New_deaths - lag(New_deaths))/lag(New_deaths)) %>% 
+  mutate(daily_death_rate = case_when(
+    daily_death_rate == "NaN" ~ 0,
+    daily_death_rate == Inf ~ 0,
+    daily_death_rate == "NA" ~ 0,
+    TRUE ~ daily_death_rate
+  )) %>% 
+  select(Date_reported,t,week,month,vaccine_period_3,vaccine_period_5,New_deaths,case_fatality_rate) %>%
+  mutate(lagged_diff_deaths = log(New_deaths) - log(lag(New_deaths))) %>% 
+  mutate(lagged_diff_deaths = case_when(
+    lagged_diff_deaths == "NaN" ~ 0,
+    lagged_diff_deaths == Inf ~ 0,
+    lagged_diff_deaths == "NA" ~ 0,
+    lagged_diff_deaths == NA ~ 0,
+    lagged_diff_deaths == -Inf ~ 0,
+    lagged_diff_deaths == "-Inf" ~ 0,
+    TRUE ~ lagged_diff_deaths
+  ))
+  # filter(Date_reported >= (ymd("2021-01-19")-days(90)) & Date_reported <= (ymd("2021-01-19")+days(90)))
+#INTERVENTION DATE 5
+intervention_date_5 = covid_vax_data %>% 
+  group_by(vaccine_period_5) %>% 
+  slice(1) %>% 
+  filter(vaccine_period_5 == 1) %>% 
+  pull(Date_reported)
+
+```
+
+```{r include=FALSE}
+
+
+#get state abreviations: only going to consider 50 states (not territories for now)
+states_abbrev = read_html("https://abbreviations.yourdictionary.com/articles/state-abbrev.html")
+scraped = states_abbrev %>% html_nodes("table") %>% html_table(header=T)
+state_abbrevs = scraped[[1]] %>% pull(`USPS Abbreviation`)
+
+#vaccine data
+vax_data <- read_csv("COVID-19_Vaccinations_in_the_United_States_Jurisdiction.csv")
+
+#replace / with - in Date:
+vax_data = vax_data %>% 
+  mutate(Date = gsub(pattern = ("/"), replacement = "-", x = Date)) %>% 
+  mutate(Date = format(as.Date(Date,'%m-%d-%Y'), '%Y-%m-%d')) 
+
+vax_data = vax_data %>% 
+  mutate(Date = as.Date(Date)) %>% 
+  select(Date,Location,Administered, Admin_Per_100K) %>% 
+  filter(Location %in% state_abbrevs)
+
+vax_data = vax_data %>% 
+  group_by(Date) %>% 
+  summarise(cumulative_administered = sum(Administered),
+            cumulative_admin_per_100k = sum(Admin_Per_100K))
+
+#look at covid data based on world bank classificiation of high income, upper-middle income, lower-middle income, low-income
+
+
+#Left Join world bank data onto covid_data to include world bank income classification:
+# covid_data = covid_data %>% 
+#   left_join(wb_classifications, by = c("Country" = "Economy"))
+# covid_data
+# 
+# population_data
+
+```
+
+
+# Introduction
+
+Discovered in Wuhan, China in December 2019, COVID-19 went from being a considerable problem at first seemingly confined to China, to a global pandemic. The World Health Organization declared that COVID-19 was a pandemic on March $11^{th}$ 2020, and two days later the United States declared a state of emergency (Moore, 2021). In the United States, schools transitioned to remote learning, and everything from libraries and movie theaters to restaurants and amusement parks closed their doors. Some for weeks, many forever.
+
+While in early April 2020 governments and international agencies like the WHO began issuing guidelines around mask wearing in order to both slow the spread of the disease and lessen its impact, it was understood that in order to truly *end* the pandemic, vaccines were going to have to play a critical role. Moderna and Pfizer/BioNTech began their Phase 3 clinical trials on July $14^{th}$ and August $12^{th}$ respectively, and about a year after the first COVID-19 case was confirmed, the Pfizer/BioNTech vaccine received emergency use authorization from the FDA, making it the first vaccine available for distribution and administration in the United States. Both the Pfizer/BioNTech and Moderna vaccines had demonstrated incredibly high efficacy rates of 95% in their Phase 3 clinical trials, and Moderna received emergency use authorization for its vaccine a week after Pfizer's (Brothers, 2020). In February of 2021, Johnson and Johnson's COVID vaccine also received EUA from the FDA following its successful Phase 3 clinical trials (FDA). Within the span of a little over a year, three vaccines were now available to Americans to combat the spread and severity of COVID-19.
+
+To put this incredible feat into perspective, vaccines typically take between 10 to 15 years to develop. Prior to the development of the COVID-19 vaccines, the fastest a vaccine was ever developed was for mumps, which took *four* years (Cagle, 2021).
+
+How has this unprecedented technological, economic, and political achievement impacted the course of the pandemic? How did the introduction of vaccines into the US population affected the new daily death count from COVID-19, if at all?
+
+Typically, questions like these, which are concerned with understanding the effect of some policy, treatment, or intervention are left up to the gold standard of causal inference: a randomized control trial. However, there are sometimes situations in which the design and implementation of such experiments is not feasible.
+
+Such is often the case with time series data. Interrupted Time Series, a quasi-experimental statistical method, is one such technique that is used to derive insights into causal relationships from time series data.To date, ITS analysis has become increasingly used for evaluating the effectiveness of certain policy interventions that were introduced at the population level. Within the last decade or so, ITS has been used to quantify the impact of rotavirus vaccination in Germany, evaluate cycle helmet legislation, and to understand the effect of the financial crisis on suicide rates in Spain, among others (Bernal et al., 2013; Kittel et al., 2018; Olivier et al., 2019). 
+
+My goal is to use an interrupted time series analysis to estimate the causal impact that the introduction of vaccines into the US population had on the new daily death count from COVID-19. The report is organized as follows: First, I provide a description of the data used in the analysis, as well as a brief overview of the most critical modeling assumptions for interrupted time series analysis. I then consider my approach to constructing a log-linear segmented regression model appropriate for describing the relationship between new COVID-19 deaths and the intervention, as well as validation of important modeling assumptions. Lastly, I discuss my results and findings, which broadly suggest there is indeed a relationship between the introduction of vaccines into the US population and the number of new deaths due to COVID-19. However, because of various caveats that I explore in the discussion of my results, I determine that drawing any sort of causal conclusions based on my findings to be invalid.
+
+
+# Methods 
+
+## Data Overview
+For the purposes of this analysis, I considered COVID-19 data provided by the World Health Organization. 
+The table below, pulled directly from the WHO website, summarizes the columns in the dataset and what they represent. Prior to March $22^{nd}$, 2020, the WHO published data it received via official communications in compliance with the International Health Regulations. Since then however, the data published by the WHO are aggregate and count data reported to the WHO daily. I also constructed a new variable, `case_fatality_rate`, that represents the number of people that have died from Covid-19 amongst those who have contracted the disease. 
+
+$$
+Case\ Fatality\ Rate\ (CFR) = \frac{Cumulative\_deaths}{Cumulative\_cases}
+$$
+
+**WHO Data**:
+```{r echo=FALSE}
+web_page = read_html("https://covid19.who.int/info?openIndex=2")
+scraped = web_page %>% html_nodes("table") %>% html_table()
+tab = scraped[[1]] %>% 
+  add_row(`Field name` = "case_fatality_rate", 
+          Type = "double",
+          Description = "ratio of cumulative deaths to cumulative cases")
+tab %>% 
+  pander()
+```
+
+Note that my ITS analysis focuses primarily on `New_deaths` in the United States. In its more thorough description of the data provided, the WHO details how its New case and death count data are constructed by subtracting current counts from cumulative counts. While the WHO updates this data regularly throughout the day as more information becomes available, I am of course only considering historical data which for the most part has been finalized. Data adjustments and reconciliations do happen on occasion, but should not be a problem for the purposes of this analysis.
+## Exploratory Data Analysis: Data Visualizations and Summary Statistics
+
+I first considered inspecting the `case fatality rate` in both time periods. Note that I have defined the time period of `pre-vaccine intervention` to be the time period prior to January $19^{th}$ 2021, and `post-vaccine intervention` to be the time period following that date. I provivde more detail on this reasoning and methodology in my `Model Construction and Assumptions` section.
+```{r echo=FALSE}
+# covid_vax_data %>% 
+#   ggplot(mapping = aes(x = Date_reported, y = case_fatality_rate))+
+#   geom_line(aes(color = 'darkred'), lwd = 1)+
+#   # geom_line(data = post_intervention_data_5, mapping = aes(x = Date_reported,y = counterfactual_harmonic_points, color = 'green'), lwd = 1.2)+
+#   scale_x_date(limits = as.Date(c(intervention_date_5 -lubridate::days(300),intervention_date_5 + lubridate::days(90))),
+#                breaks = "2 week",
+#                date_labels = "%Y-%m-%d")+
+#   geom_vline(xintercept = intervention_date_5, linetype = "dotted")+
+#   guides(x = guide_axis(angle = 45))+
+#   geom_rect(data = covid_vax_data, inherit.aes = FALSE, xmin = intervention_date_5, xmax = intervention_date_5 + days(100), ymin = -1, ymax = max(covid_vax_data$New_deaths)+100, color = "transparent", fill = "gray", alpha = .01)+
+#   ylim(c(-.05,.05))+
+#   ggtitle("Case Fatality Rate in the United States", subtitle = "October 2020- April 2021")+
+#   xlab("Date")+ ylab("Daily New Deaths")+
+#   annotate("text", x = as.Date("2021-04-12"), y = 4400, label = "Counterfactual")+
+#   theme_economist()+
+#   theme(legend.position = "none")
+```
+
+<center>
+```{r echo=FALSE, fig.align ='center', message=TRUE, warning=FALSE, out.width="60%" }
+#do some summary statistics ie, is case fatality rate lower in 
+
+#make a plot of this
+# covid_vax_data %>% 
+#   group_by(vaccine_period_5) %>% 
+#   summarise(avg_case_fatality_rate = mean(case_fatality_rate, na.rm =T))
+
+means = aggregate(case_fatality_rate ~ vaccine_period_5, covid_vax_data,mean)
+
+ggplot(data = covid_vax_data, mapping = aes(x = vaccine_period_5, y = case_fatality_rate, fill = vaccine_period_5))+
+  geom_boxplot(alpha = .8)+
+  stat_summary(fun = mean, colour = "darkred", geom = "point",
+               shape = 18, size = 3, show.legend = FALSE)+
+  geom_text(data = means, aes(label = round(case_fatality_rate,4),
+                              y = case_fatality_rate + .005))+
+  scale_x_discrete(labels = c("pre-vaccine intervention", "post-vaccine intervention"))+
+  scale_fill_discrete(name = "Vaccine Period", 
+                      labels = c("pre-vaccine ",
+                                 "post-vaccine"))+
+  ggtitle("Case Fatality Rate:", subtitle = "before & after vaccine introduction")+
+  xlab("Vaccine Period") + ylab("Case Fatality Rate")+
+  theme_minimal()+
+  theme(plot.title = element_text(size = 15, face = "bold"))
+```
+</center>
+Clearly, the case fatality rate is considerably lower in the post-vaccine time period than before. In fact it is almost halved, and there is far less variability in its distribution as well. Case fatality rate is a useful metric for understanding how deadly a disease is, but it is by no means perfect, and it has the potential to greatly overstate the death rate if cases are believed to be under-counted, which in the case of Covid-19, they are (Ritchie et al., 2020) . Nevertheless, it still serves as a useful metric for quantifying and visualizing the effect of vaccines on reducing deaths in the United States. 
+
+For this reason, I turned my attention to New COVID-19 deaths. Because the *number* of new deaths is not a ratio, it is not susceptible too some of the concerns that case fatality rate is.
+I considered plotting `New Deaths` for each WHO region to see if I could discern any interesting information about COVID-19 deaths across the various WHO regions.
+<center>
+```{r echo=FALSE, fig.align='center', out.width="60%"}
+
+#New Covid Deaths by WHO region
+ggplot(data = covid_data, mapping = aes(x = Date_reported, y = New_deaths))+
+  geom_line(mapping = aes(color = WHO_region, alpha = .8))+
+  scale_x_date(date_breaks = "3 months")+
+  guides(x = guide_axis(angle = 45))+
+  ggtitle("New Covid-19 Deaths", subtitle = "by WHO Region")+
+  xlab("Date Reported") +ylab("New Deaths")+
+  labs(colour = "WHO Region")+
+  theme_minimal()+
+  theme(plot.title = element_text(size = 20, face = "bold"))
+```
+</center>
+This plot then of course highlights some issues with looking at count data, especially across multiple regions: While a ratio essentially adjusts for differences in population size, count data most definitely does not, and it is clear from the plot that many of the regions that have a high number of `New Deaths` are also regions that include large countries. For this reason, I made the decision to restrict the focus of my interrupted time series analysis to a single country, the United States.
+
+
+## Interrupted Time Series Analysis: An Overview
+
+### Controlled Interrupted Time Series Analysis
+An interrupted time series analysis using a before-after design involves comparing a metric of concern before and after an intervention takes place in the population.To do so, a *counterfactual* is produced, which is essentially a model-produced forecast based on data from the pre-intervention period, and this provides the baseline for comparison in the post-intervention time period.
+
+
+One of the nice things about ITS is that, compared to say similar econometric methods like difference-in-differences, it uses multiple pre- and post-intervention observations, effectively accounting for and controlling for any underlying trends. And, since we are considering the entire population when using ITS, its design is often free from problems like selection bias and unidentified confounding factors. 
+
+Of course, that is not to say that confounders *can't* pose a threat to the robustness of an interrupted time series analysis. For example, what about major events or co-interventions that occur around the same time as the intervention of interest?
+
+A controlled interrupted time series (CITS) entails identifying a series that was not exposed to the intervention and incorporating it into the ITS design. The main benefit of doing this is that it allows to one to control for unidentified confounding events and interventions that also occurred during or around the same time as the intervention under consideration. Simply put, if a well chosen control series is incorporated into the design, and an effect is identified in the treatment group but *not* in the control group, then that provides stronger evidence that the effect is truly attributable to the intervention and not some confounding factor ((Bernal et al., 2018)). Of course, including a control series is not always feasible or possible.
+
+### Segmented Poisson Regression: Model Construction & Assumptions
+
+For the purposes of an interrupted time series analysis, statisticians often consider a couple of go-to possible model specifications: ARIMA models and segmented regression models are two of the most popular models employed to conduct an ITS. While ARIMA can be powerful, especially in the presence of weakly stationary data, segmented regression models are also frequently used due to their (relatively) easy interpretability. In situations where rates or counts are concerned, as is the case here, where the outcome of concern is the `daily death count`, poisson regression can be used to model the relationship.
+
+I consider the model:
+$$
+log(Y_t) = \beta_0 + \beta_1 X_{vaccine\_period} + \beta_2t + \beta_3 t X_{vaccine\_period}
+$$
+Where 
+
+- **i.** $X_{vaccine\_period,t}$ is a dummy variable indicating $0$ for the pre-intervention (pre-vaccine) period and $1$ denoting the post-intervention period. For the purposes of this analysis, I considered January $19^{th}$ to be the first day of the intervention period. Note that this is approximately 5 weeks after the first person in the United States was vaccinated (Loftus & West, 2020). I incorporate this buffer to account for the fact that the individuals are not considered to be "fully vaccinated" until 2 weeks following their second shot, which is supposed to be received 3 weeks after their first.
+
+- **ii.** $t$ denotes the time trend
+
+- **iii.** $Y_t$ denotes the outcome, the number of daily deaths at time $t$.
+
+Note that $\beta_0$ denotes the number of new daily deaths at the baseline $t = 0$. $\beta_1$ can be interpreted as the mean difference in the number of new daily deaths between the pre-intervention and post-intervention time periods. $\beta_2$ represents the slope of the linear time trend and $\beta_3$ represents affect that the interaction between $t$ and the vaccine period has on the number of new daily deaths. The inclusion of the linear time trend $t$ is intended to capture the unobserved confounding factors which can be represented as a linear function of time.
+
+
+For the purposes of this analysis, focus was restricted to a 6 month time period between October 2021 and April 2021. More specifically, 
+$$
+X_{vaccine\_period} = \begin{cases} 
+1 &\mbox{if } t \geq 382  \\
+0 & \mbox{if } t < 382. 
+\end{cases} 
+$$ 
+Where $t = 382$ corresponds to January $19^{th}$ 2021. 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.align = 'center'}
+covid_vax_data %>% 
+  ggplot(mapping = aes(x = Date_reported, y = New_deaths))+
+  geom_line(aes(color = 'darkred'), size = 1)+
+  scale_x_date(limits = as.Date(c(intervention_date_5 -lubridate::days(90),intervention_date_5 + lubridate::days(90))),
+               breaks = "2 week",
+               date_labels = "%Y-%m-%d")+
+  geom_vline(xintercept = intervention_date_5, linetype = "dotted")+
+  guides(x = guide_axis(angle = 45))+
+  geom_rect(data = covid_vax_data, inherit.aes = FALSE, xmin = intervention_date_5, xmax = intervention_date_5 + days(100), ymin = 0, ymax = max(covid_vax_data$New_deaths)+1000, color = "transparent", fill = "gray", alpha = .01)+
+  ylim(c(0,6000))+
+  ggtitle("New Deaths in the United States", subtitle = "October 2020- April 2021")+
+  xlab("Date")+ ylab("Daily New Deaths")+
+  annotate("text", x = as.Date("2021-03-12"), y = 4900, label = "Intervention Period", size = 3)+
+  theme_economist()+
+  theme(legend.position = "none")
+
+```
+
+
+A poisson (log-linear) regression model requires that *three* main assumptions be met.
+First, the outcome must be a poisson response. In other words, the response must be a count or a rate. Second, The mean of the process, $\mathbb{E}(Y_t)$ must equal the variance of the process $Var(Y_t)$. When this assumption fails to hold, there is oftentimes *overdispersion*, which describes how the conditional variance of the process depends on the mean of the process. Why does it matter if the mean and variance are equivalent? To use the case of ordinary least squares regression as example, consider the situation when the constant variance (homoskedasticity) assumption fails. Heteroskedasticity can lead to incorrect standard error calculations, potentially leading to fault conclusions and inference during statistical tests. *Overdispersion* is essentially the poisson regression equivalent of heteroskedasticity. Lastly, observations are assumed to be independent. Within the context of time series analysis, this last observation is frequently violated, since previous observations are often positively correlated with the current observation at time $t$. This again is problematic because, in the presence of positive autocorrelation for example, standard errors are *underestimated*. This can lead to drawing faulty conclusions, but thankfully there are remedial measures and methods to correct for this. These assumptions will be explored and validated in the `Sensitivity Analysis` section.
+
+# Results
+
+### Findings
+
+
+Below is the output from the fitted log-linear model:
+<center>
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.align = "center", results = 'asis'}
+poiss_model_5 = glm(New_deaths ~ t + vaccine_period_5 + t*vaccine_period_5 , family = "poisson",
+                  data = covid_vax_data)
+
+
+summ = coeftest(poiss_model_5,df = Inf, vcov. = NeweyWest)
+
+se_robust <- function(x){
+   list(coeftest(x, vcov. = NeweyWest)[, "Std. Error"])
+}
+p_robust = function(x){
+  list(coeftest(x, vcov. = NeweyWest)[,"Pr(>|z|)"])
+}
+
+ 
+stargazer(poiss_model_5, type = "html",report = "vc*p", se = se_robust(poiss_model_5),
+          p = p_robust(poiss_model_5), notes = c("Newey-West Robust Standard Errors"),
+          title = "Effect of Vaccine Introduction on New Daily Deaths in the United States:",
+          header = FALSE
+          )
+```
+</center>
+
+
+There are two major things worth noting based on these results. First, we *fail to reject* the null hypothesis that $\beta_{vaccine\_period} = 0$ at the 5% significance level. However, note that the interaction between $t$ and $X_{vaccine\_period}$ is just statistically significant at $p = .077$. The result suggests that the effect of vaccine introduction into the US population *depends* on how long vaccines have been available. This makes intuitive sense as well, as we know that as a larger percentage of the population becomes vaccinated, the virus has difficulty spreading  and infecting people, reducing the number of deaths. 
+
+To interpret $\beta_{t:vaccine\_period}$ literally,  we must exponentiate it: $e^{(-.005)} = .995$. In other words, all else constant, during the intervention period, going from $t$ to $t+1$ is associated with a .5% reduction in the number of new daily deaths.
+
+
+Below, the de-seasonalized counterfactual is superimposed to illustrate what Daily New Deaths may have looked like had vaccines not been introduced into the population:
+<center>
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+counterfactual_data = data.frame(t = seq(382,776, by =1), vaccine_period_5 = factor(rep(0,395)))
+
+
+#make the actual predictions:
+counterfactual_points = predict(poiss_model_5,newdata = counterfactual_data, type = "response")
+#append the predictions to a subset of covid_vax_data (post-intervention period)
+post_intervention_data_5 = covid_vax_data %>% 
+  select(Date_reported, t, New_deaths, vaccine_period_5) %>% 
+  filter(vaccine_period_5 == 1) %>% 
+  mutate(counterfactual_points = counterfactual_points)
+covid_vax_data %>% 
+  ggplot(mapping = aes(x = Date_reported, y = New_deaths))+
+  geom_line(aes(color = 'darkred'), size = 1)+
+  geom_line(data = post_intervention_data_5, mapping = aes(x = Date_reported,y = counterfactual_points, color = 'green'), lwd = 1.5)+
+  scale_x_date(limits = as.Date(c(intervention_date_5 -lubridate::days(90),intervention_date_5 + lubridate::days(90))),
+               breaks = "2 week",
+               date_labels = "%Y-%m-%d")+
+  geom_vline(xintercept = intervention_date_5, linetype = "dotted")+
+  guides(x = guide_axis(angle = 45))+
+  geom_rect(data = covid_vax_data, inherit.aes = FALSE, xmin = intervention_date_5, xmax = intervention_date_5 + days(100), ymin = 0, ymax = max(covid_vax_data$New_deaths)+1000, color = "transparent", fill = "gray", alpha = .01)+
+  ylim(c(0,6000))+
+  ggtitle("New Deaths in the United States", subtitle = "October 2020- April 2021")+
+  xlab("Date")+ ylab("Daily New Deaths")+
+  annotate("text", x = as.Date("2021-04-12"), y = 4400, label = "Counterfactual", size = 3)+
+  theme_economist()+
+  theme(legend.position = "none")
+
+```
+</center>
+Note the linear trend of the counterfactual. The implications of this, and using poisson regression in general in the context of interrupted time series, will be explored further in the `Discussion`.
+
+### Diagnostics & Sensitivity Analysis
+
+In order to ensure my poisson model was a valid representation of daily new deaths, I needed to ensure $\mathbb{E}(Y_t)$ = $Var(Y_t)$. One way to verify this assumption is met is to inspect the `dispersion` parameter estimate from `glm` output. A dispersion parameter estimate of 1 or close to 1 is indicative of this assumption being met, as it suggests that the mean and variance of the response are equal. In the case of our final model, the dispersion parameter was exactly `r summary(poiss_model_5)$dispersion`
+
+```{r eval=FALSE, include=FALSE}
+summary(poiss_model_5)$dispersion 
+```
+
+As for the independence of observations, the easiest way to verify this assumption is (or is not) met is to visually inspect the `autocorrelation plot`, which represents the correlation between residuals at different time points. Consider the ACF plot for the fitted model:
+<center>
+```{r echo=FALSE}
+acf(poiss_model_5$residuals, main = "Autocorrelation of Residuals")
+```
+</center>
+
+The blue dashed lines indicate a 5% significance level; any lags that extend beyond that point are statistically significant. Clearly, there is highly persistent autocorrelation across time for all the lags shown in the above ACF plot. This suggests that information contained in the residuals at previous time lags contains valuable information about the current time period's daily death count.  This is extremely problematic, as the presence of autocorrelation can lead to incorrect standard errors.
+
+To account for this, I considered using `Newey-West` robust standard errors. While there are other, perhaps even more common robust standard error types that deal specifically with heteroskedasticity, `Newey-West` estimates are unique in that they can account for heteroskedasticity *and* autocorrelation ("Regression with Newey-West").
+Note that the results presented in `Findings` include standard errors that were calculated using `Newey-West` robust standard errors. Prior to making this adjustment, the standard errors that were calculated under typical poisson regression assumptions were considerably smaller.
+Below I have provided the regression output that did not adjust the standard errors using the Newey-West method to allow for comparison:
+<center>
+```{r echo=FALSE, results='asis'}
+#stargazer table with both of the models ideally
+se_robust_errors = round(as.vector(se_robust(poiss_model_5)[[1]]),4)
+p_robust_values = round(as.vector(p_robust(poiss_model_5)[[1]]),3)
+
+stargazer(poiss_model_5,poiss_model_5, type = "html", title = "Sensitity Analysis: Comparison of Regression Results with & without Newey-West Std. Errors",
+          se = list(NULL, se_robust_errors),
+          p = list(NULL, p_robust_values),
+          column.labels=c("default","Newey-West Robust"), align=TRUE,
+          header = FALSE)
+
+
+```
+</center>
+
+After correcting for autocorrelation, the standard error estimates obtained using the Newey-West method are drastically larger compared to the default standard errors. Without making the appropriate adjustments to account for this autocorrelation, I would've come to a much different conclusion than I did from using the Newey-West robust standard errors in my final presentation of results.
+
+### Discussion
+My findings *suggest* that the introduction of vaccines into the US population are associated with a decline in the number of new deaths. My findings also suggest that effect becomes more profound as time goes on, given the statistical significance (p-value $= .077$. $\alpha = .1$) of the interaction term between $t$ and the intervention. Note however that there are major caveats of my analysis that ultimately make drawing causal inference from these findings invalid.
+
+While it is reassuring that the assumptions of poisson regression are met, there are still potential issues from both the standpoint of the design of the interrupted time series analysis, as well as with the specification of the model.
+
+Ideally, an interrupted time series analysis has a control series, as the inclusion of one can provide greater evidence and certainty about the conclusions drawn from the ITS. One major drawback of this analysis was therefore the *lack* of a control series. Identifying a control for this analysis proved to be extremely difficult as I was unable to determine a control series in the US that was not affected by the intervention. I hypothesized that a small but representative segment of the US population that was considerably delayed in receiving the intervention (vaccine) would make for a powerful control series, but was unable to find any evidence that there was such a population in the US that even existed. 
+
+My biggest concern here is seasonality. While I restricted my focus to a 6-month time frame between late 2020 and early 2021 to avoid the effect of both waning vaccine efficacy as well as new variants like Delta, which became the dominant strain in the US in June of 2021, there is little doubt in my mind that part of the reason for the decline in new covid-related deaths during the latter part of winter 2021 is attributable to the US having overcome a winter spike in cases. Why? The United States experienced a similar spike in cases and deaths during the November and December of 2021 and the January of 2022 that greatly resembles the spike experienced a year prior (Miller, 2021). This greatly suggests there is seasonality at play, as cases and deaths likely spike during the winter time due to increased time spent in doors with other people. If COVID-19 had existed for several winters prior to the introduction of the vaccines, it would've been possible to obtain an estimate of the seasonal effect on new deaths and disentangle it from the estimate of the effect of COVID-19 vaccines on new deaths, but that was not the case given the rapid and record-setting speed with which the vaccines were developed and provided to the US population. Of course at this point I figured that finding a control series that had similar seasonality tendencies as COVID-19 cases and deaths could have proven to be a powerful control, but I was unable to find a suitable series. Daily flu deaths would've been an obvious choice, as flu cases and deaths infamously spike every winter before subsiding and are likely heavily correlated with COVID-19 cases during that time period, and we know  *a priori* that COVI-19 vaccines do not affect the flu, but there are no data sources of daily flu deaths available in the United States.
+
+And lastly, this role of seasonality ties in to the last issue with the analysis, which is the inherit assumption made when applying a linear model to an interrupted time series analysis: Is it even a fair to assume that without the introduction of vaccines, new deaths would've continued to increase linearly for the foreseeable future? The answer is most likely *no*, and it is therefore fair to say that the estimate I did obtain should not be used to make statements about estimated new COVID-19 deaths say a a year or even 6 months from the point of vaccine introduction.
+
+
+As a result of all these caveats, it is likely inappropriate to make causal inference about the relationship between the introduction of COVID-19 vaccines into the US population and the number of new daily deaths based on these findings. A more stringest analysis that does a better job of controlling for these various potential confounders is necessary to make any sort of causal inference.
+
+# Conclusion
+
+While my analysis ultimately fell prey to the difficulty of conducting causal inference using observational data, this does not necessarily mean or suggest that doing so in the future will also prove too difficult to overcome. For example, if the United States continues to experience COVID-19 spikes every winter for the foreseeable future, it may be easier to account for the seasonality that is greatly affecting my results in the current analysis.
+
+The weakness of my results also should not be taken as evidence against the efficacy of vaccines. While my goal was to use a relatively new quasi-experimental approach to glean insight into the causal relationship between vaccines and the number of deaths on a *population level*, there is still plenty of other statistically robust research and analyses that demonstrate the effectiveness of the current COVID-19 vaccines reducing severity of disease, hospitalization, as well as death (Lin et al., 2022). The production of robust statistical evidence of the efficacy of vaccines is incredibly important, as such evidence can be used to inform policy makers, medical experts, and the general public about COVID-19 vaccination.
+
+
+
+```{r include=FALSE}
+
+intervention_date = covid_vax_data %>% 
+  group_by(vaccine_period_3) %>% 
+  slice(1) %>% 
+  filter(vaccine_period_3 == 1) %>% 
+  pull(Date_reported)
+# cfr_plot = covid_vax_data %>% 
+#   ggplot(mapping = aes(x = Date_reported, y = case_fatality_rate ))+
+#   geom_line(aes(color = 'darkred'), size = 1.25)+
+#   scale_x_date(limits = as.Date(c("2020-03-13","2022-02-17")),
+#                breaks = "2 months",
+#                date_labels = "%Y-%m")+
+#   geom_vline(xintercept = intervention_date)+
+#   guides(x = guide_axis(angle = 45))+
+#   ggtitle("Case Fatality Rate in the United States", subtitle = "March 2020 - February 2022")+
+#   xlab("Date")+ ylab("CFR")+
+#   scale_y_continuous(breaks = seq(from = .01, to = .1, by = .01), labels = percent)+
+#   theme_economist()+
+#   theme(legend.position = "none")
+# cfr_plot
+
+#zoomed in time frame
+covid_vax_data %>% 
+  ggplot(mapping = aes(x = Date_reported, y = New_deaths ))+
+  geom_line(aes(color = 'darkred'), size = 1)+
+  scale_x_date(limits = as.Date(c(intervention_date -lubridate::days(90),intervention_date + lubridate::days(90))),
+               breaks = "2 week",
+               date_labels = "%Y-%m-%d")+
+  geom_vline(xintercept = intervention_date, linetype = "dotted")+
+  guides(x = guide_axis(angle = 45))+
+  geom_rect(data = covid_vax_data, inherit.aes = FALSE, xmin = intervention_date, xmax = intervention_date + days(100), ymin = 0, ymax = max(covid_vax_data$New_deaths)+100, color = "transparent", fill = "gray", alpha = .01)+
+  ggtitle("New Deaths in the United States", subtitle = "October 2020- April 2021")+
+  xlab("Date")+ ylab("Daily New Deaths")+
+  theme_economist()+
+  theme(legend.position = "none")
+
+```
+
+
+
+
+```{r include=FALSE}
+new_deaths_plot = covid_vax_data %>% 
+  ggplot(mapping = aes(x = Date_reported, y = New_deaths, color = "green4"))+
+  geom_line(aes(color = 'green4'), size = .95)+
+  scale_x_date(limits = as.Date(c("2020-03-13","2022-02-17")),
+               breaks = "2 months",
+               date_labels = "%Y-%m")+
+  guides(x = guide_axis(angle = 45))+
+  ggtitle("New Deaths", subtitle = "United States")+
+  xlab("Date")+ ylab("New Deaths")+
+  theme_economist()+
+  theme(legend.position = "none")
+
+```
+
+
+
+## Resources:
+
+Bernal, J. L., Cummins, S., & Gasparrini, A. (2017). Interrupted time series regression for the evaluation of public health interventions: a tutorial. International journal of epidemiology, 46(1), 348–355. https://doi.org/10.1093/ije/dyw098
+
+
+Lopez Bernal, J. A., Gasparrini, A., Artundo, C. M., & McKee, M. (2013). The effect of the late 2000s financial crisis on suicides in Spain: an interrupted time-series analysis. European journal of public health, 23(5), 732–736. https://doi.org/10.1093/eurpub/ckt083
+
+Bernal, J. L., Cummins, S., &amp; Gasparinni, A. (2018, July 5). The use of controls in interrupted time series studies of public health interventions. academic.oup.com. Retrieved March 3, 2022, from https://academic.oup.com/ije/article/47/6/2082/5049576 
+
+Brothers, W. (2020, December 3). A timeline of COVID-19 vaccine development. BioSpace. Retrieved March 3, 2022, from https://www.biospace.com/article/a-timeline-of-covid-19-vaccine-development/ 
+
+Cagle, T. (2021, July 21). What's the fastest a vaccine has been made in modern medicine? Nautilus. Retrieved March 3, 2022, from https://coronavirus.nautil.us/until-now-whats-the-quickest-a-vaccine-has-ever-been-developed/ 
+
+FDA. (n.d.). Covid-19 Frequently Asked Questions. U.S. Food and Drug Administration. Retrieved March 3, 2022, from https://www.fda.gov/emergency-preparedness-and-response/coronavirus-disease-2019-covid-19/covid-19-frequently-asked-questions#:~:text=On%20December%2011%2C%202020,)%20of%20a%20vaccine 
+
+
+Kittel P. A. (2018). The impact of the recommendation of routine rotavirus vaccination in Germany: An interrupted time-series analysis. Vaccine, 36(2), 243–247. https://doi.org/10.1016/j.vaccine.2017.11.041
+
+Lin, D.-Y., Gu, Y., Wheeler, B., Young, H., Holloway, S., Sunny, S.-K., Moore, Z., &amp; Zeng, D. (1970, March 4). Effectiveness of covid-19 vaccines over a 9-month period in North Carolina: Nejm. New England Journal of Medicine. Retrieved March 4, 2022, from https://www.nejm.org/doi/full/10.1056/NEJMoa2117128 
+
+Miller, K. (2021, December 20). Is Omicron driving a winter covid surge? Verywell Health. Retrieved March 3, 2022, from https://www.verywellhealth.com/omicron-covid-winter-surge-5213832 
+
+Moore, S. (2021, September 28). History of covid-19. news-medical.net. Retrieved March 3, 2022, from https://www.news-medical.net/health/History-of-COVID-19.aspx 
+
+Olivier, J., Boufous, S., & Grzebieta, R. (2019). The impact of bicycle helmet legislation on cycling fatalities in Australia. International journal of epidemiology, 48(4), 1197–1203. https://doi.org/10.1093/ije/dyz003
+
+Ritchie, H., Mathieu, E., Rodés-Guirao, L., Appel, C., Giattino, C., Ortiz-Ospina, E., Hasell, J., Macdonald, B., Beltekian, D., &amp; Roser, M. (2020, March 5). Mortality risk of COVID-19. Our World in Data. Retrieved March 4, 2022, from https://ourworldindata.org/mortality-risk-covid 
+
+Schaffer, A.L., Dobbins, T.A. & Pearson, SA. Interrupted time series analysis using autoregressive integrated moving average (ARIMA) models: a guide for evaluating large-scale health interventions. BMC Med Res Methodol 21, 58 (2021)
+
+STATA. (n.d.).Regression with Newey-West Standard Errors. stata.com. Retrieved March 3, 2022, from https://www.stata.com/manuals13/tsnewey.pdf 
+
+World Health Organization. (n.d.). WHO Coronavirus (COVID-19) Dashboard. World Health Organization. Retrieved March 4, 2022, from https://covid19.who.int/info?openIndex=2 
+
+
+
+
+
+```{r ref.label=knitr::all_labels(), echo=TRUE, eval=FALSE}
+```
+
