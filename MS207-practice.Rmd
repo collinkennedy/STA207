@@ -10,6 +10,9 @@ ___
 
 **Name**: 
 
+Link to 207 Notes:
+https://nbviewer.org/github/ChenShizhe/StatDataScience/blob/master/Notes/Chapter4ANOVAIII.ipynb
+
 **Student ID**: 
 
 ___
