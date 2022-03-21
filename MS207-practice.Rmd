@@ -109,7 +109,10 @@ $H_1$ not all $\mu_i$ are equivalent for $i = 1,..,4$
 
 ```{r}
 # (c). (Type your code in the space below, if any)
-anova_model = aov(weight ~ Diet - 1, data = chickweight_data)
+day20 = chickweight_data %>% 
+  filter(Time == 20)
+
+anova_model = aov(weight ~ as.factor(Diet), data = day20)
 summary(anova_model) %>% pander()
 
 
@@ -126,7 +129,7 @@ Give a p-value < .05, we reject the null hypothesis at $\alpha = .05$, and concl
 # (d). (Type your code in the space below, if any)
 anova_model$coefficients
 anova_resids = anova_model$residuals
-ggplot(data = chickweight_data, mapping = aes(x = anova_model$fitted.values, y = anova_resids))+
+ggplot(data = day20, mapping = aes(x = anova_model$fitted.values, y = anova_resids))+
   geom_point(alpha = .8)+
   geom_hline(yintercept = 0, color = "red")+
   ggtitle("Fitted Values vs. Residuals")+
@@ -135,24 +138,43 @@ ggplot(data = chickweight_data, mapping = aes(x = anova_model$fitted.values, y =
   theme(plot.title = element_text(size = 15, face = "bold"))
 ```
 Based off purely visual inspection, there potentially appears to be a slight departure from the constant variance assumption. This can be problematic for inference drawn from p-values and test statistics,  so I consider the Levene test of constant variance:
+$H_0: \sigma^2_1 = \sigma^2_2 = \sigma^2_3 = \sigma^2_4$
+
+$H_1:$ not all $\sigma^2_i$ are equal for $i=1,...,4$
 ```{r}
 d_ij = abs(anova_model$residuals)
-summary(aov(d_ij ~ Diet, data = chickweight_data))
+summary(aov(d_ij ~ Diet, data = day20))
 
 ```
 
-Constant variance assumption appears to be violated. It is difficult to say to what extent this is actually problematic though.
+Given a p-value of .33, we fail to reject the null hypothesis and conclude there is homoskedasticity.
 
 Now to consider the assumption of the normally distributed error term:
 ```{r}
-ggplot(data = chickweight_data, mapping = aes(anova_resids))+
+ggplot(data = day20, mapping = aes(anova_resids))+
   geom_histogram(bins = 25, alpha = .8, fill = "dodgerblue2", color = "black")+
   ggtitle("Histogram of Residuals")+
   xlab("Residuals")+
   theme_minimal()
 
+plot(anova_model)
+
 ```
 The residuals here are very clearly right-skewed, and this is a considerable and problematic departure from normality. This may indicate the model is mis-specified (i.e., missing important explanatory variables). Such a departure from normality can also negatively impact the legitimacy of inference drawn from statistical tests on parameter estimates.
+
+There don't appear to be any serious departures from normality based on the `Normal QQ Plot`.
+We also consider a more formal statistical test (`Shapiro-Wilk`):
+
+$H_0:$ errors are normally distributed
+
+$H_1:$ errors are not normally distributed
+```{r}
+#shapiro-wilks test:
+shapiro.test(anova_model$residuals)
+```
+
+We fail to reject the null hypothesis at $\alpha =.05$ and conclude the errors are normally distributed.
+
 
 
 
@@ -163,28 +185,50 @@ The residuals here are very clearly right-skewed, and this is a considerable and
 <b> Solution: </b>  (Type your answer here)
 Here we consider the model (cell means form):
 $$
-Y_{ijk} = \mu_{ij} + \epsilon_{ijk}
+Y_{ijk} = \mu_{ij} + \epsilon_{ijk}, \ \ k = 1,...,n_{ij};\ \ i = 1,...,a;\ \ j=1,...,b
 $$
 
 
 Similarly, the factor-effects form of the two-way ANOVA model:
 $$
-Y_{ijk} = \mu + \alpha_i + \beta_j + \epsilon_{ijk}
+Y_{ijk} = \mu_{..} + \alpha_i + \beta_j +(\alpha \beta)_{ij}+ \epsilon_{ijk}, \ \ k = 1,...,n_{ij};\ \ i = 1,...,4;\ \ j=1,...,12
 $$
-where $\mu$ is the overall mean weight, $\alpha_i$ denotes the treatment effect of the $i^{th}$ diet on weight $i=1,...,4$, $\beta_j$ denotes the growth rate (aka, the effect of 'time') on `weight` (not sure what j is indexed up to), and $\epsilon_{ijk}$ is iid $N(0,\sigma^2)$ random error. ( think J is through 12)
-
 Both parameters are subject to the constraint that
 $$
-\sum_{i = 1}^{4}\alpha_i = \sum_{j=1}^{idk} \beta_j = 0
+\sum_{i = 1}^{4}\alpha_i = \sum_{j=1}^{12} \beta_j =\sum_{i=1}^{4} (\alpha \beta)_{ij} = \sum_{j=1}^{12} (\alpha \beta)_{ij} = 0
 $$
+
+where 
+ 
+- The outcome variable $Y_{ijk}$ represents the <outcome> of the $k^{th}$ <exper. unit> in cell {$i,j$}, where $i$ denotes the $i^{th}$ diet, and $j$ denotes the $j^{th}$ day.
+
+- $\mu_{..}$ is the overall mean weight, 
+
+- $\alpha_i$ = $\mu_{i.} - \mu_{..}$  denotes the treatment/main effect of the $i^{th}$ diet on weight $i=1,...,4$, 
+
+- $\beta_j$  = $\mu_{.j} - \mu_{..}$ denotes the growth rate (aka, the effect of 'time') on `weight` , 
+
+- $(\alpha \beta)_{ij}$ = $\mu_{ij} - \mu_{i.} - \mu_{.j} + \mu_{..}$ denotes the interaction effect between $\alpha_i$ and $\beta_j$,
+
+- and $\epsilon_{ijk} \stackrel{iid}{\sim} N(0,\sigma^2)$ random error.
 
 We consider the Hypothesis that:
 $H_0:$ $\beta_j = 0$ for $j = 1,...,12$
+
 $H_1:$ at least one $\beta_j \neq 0$
+
+```{r}
+#table of cell counts table(factorA, factorB)
+table(chickweight_data$Diet,chickweight_data$Time) #unbalanced design
+
+
+```
+
 
 
 ```{r}
 # (e). (Type your code in the space below, if any)
+#include interaction
 two_way_model = aov(weight ~ Diet + as.factor(Time), data = chickweight_data)
 summary(two_way_model)
 
@@ -224,7 +268,7 @@ It is evident that much (about 80%) of the random effect variance is explained b
 **(g) Assume that the chicks in each diet are randomly selected from the same population, i.e., the enrollment of chicks is independent from any other factors. State the Stable Unit Treatment Value Assumption, write down the potential outcomes (weight at Day 20), and verify whether the randomization assumption holds.** 
 	
 <b> Solution: </b>  (Type your answer here)
-We have four potential outcomes:
+We have four potential outcomes at day 20 (j = 20):
 $$
 {Y_i(1), Y_i(2),  Y_i(3), Y_i(4)}
 $$
