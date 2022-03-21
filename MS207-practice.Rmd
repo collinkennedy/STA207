@@ -1,0 +1,247 @@
+---
+title: "MS Comprehensive Exam 2022"
+date: "STA 207  (100 points)"
+output: html_document
+---
+
+<span style="color:red">**Read the instructions on Canvas carefully!**</span>
+
+___
+
+**Name**: 
+
+**Student ID**: 
+
+___
+
+```{r,echo=T,results=F,message=F}
+library(lme4)
+library(tidyverse)
+library(pander)
+library(broom)
+library(knitr)
+library(kableExtra)
+```
+
+In this exam, we investigate the `ChickWeight` dataset in `R`. You can load the data using the following commands. Carefully read the help file of `ChickWeight` before working on the following questions. 
+```{r, echo=T}
+data("ChickWeight")
+chickweight_data = as.data.frame(ChickWeight)
+
+
+```
+
+***
+
+**(a) Briefly summarize all variables in the data set. You need to provide the definition of the variable and quantitative summary. **
+
+<b> Solution: </b>  (Type your answer here)
+
+
+```{r}
+# (a). (Type your code in the space below, if any)
+
+
+```
+
+
+
+
+**(b) Visualize the weights of each chicks over time in one plot, where (i) each chick is represented by one solid curve, and (ii) the `diet` is color-coded as black (1), red (2), green (3), and blue (4). In addition to the required visualization, you may add any supporting curves, symbols, or any additional plots that you find informative.**
+	
+<b> Solution: </b>  (Type your answer here)
+
+
+```{r}
+# (b). (Type your code in the space below, if any)
+ggplot(data = chickweight_data, mapping = aes(x = Time, y = weight, colour = Diet, group = Chick))+
+  geom_line()+
+  scale_color_manual(values = c("black", "red","darkgreen","dodgerblue"))+
+  ggtitle("Chick Weight Up to 21 days after Birth")+
+  theme_minimal()+
+  theme(plot.title = element_text(size = 15, face = 'bold'))
+
+```
+
+#Useful boxplot code
+```{r}
+# snout_to_vent_length_plot = ggplot(data = snake_df, mapping = aes(x = gender, y = snout_to_vent_length, fill = gender))+
+#   geom_boxplot(alpha = .9) +
+#   scale_fill_brewer(palette = "Dark2")+
+#   ggtitle("Snout-to-Vent Length Box Plot", subtitle = "by gender")+xlab("gender") + ylab("Snout to Vent Length") +
+#   theme_minimal() + 
+#   theme(plot.title = element_text(face = "bold"))
+
+```
+
+
+
+***
+
+
+
+**(c) Write down an appropriate one-way ANOVA model to answer the question whether there is any changes in mean weights at Day 20 across the four diet group. To receive full credits, you need to (i) write down the model, explain your notation, constraint(s) and/or assumptions; (ii) state the null and alternative hypotheses; (iii) state the test result. You can find basic LaTeX commands at the end of this file.  **
+
+
+<b> Solution: </b>  (Type your answer here)
+
+We consider the following one-way ANOVA model, first in cell-means form/notation:
+$$
+Y_{ij} = \mu_{i} + \epsilon_{ij},
+$$
+
+Where $\mu_i$ represents the $i^th$ factor level mean, $Y_{ij}$ denoting the $j^{th}$ --- not sure --- I think the jth chick on the ith diet, and $\epsilon_{ijk}$ is random error which is iid $N(0,\sigma^2)$
+
+
+We could also consider the factor-effects form of the ANOVA model, which can be represented as:
+$$
+Y_{ij} = \mu + \tau_i + \epsilon_{ij},
+$$
+Where $\mu$ represents the overall mean weight level, $\tau_i$ represents the $i^{th}$ treatment effect, $Y_{ijk}$ again represents jth chick on the ith diet, and $\epsilon_{ijk}$ is iid $N(0,\sigma^2)$ random error.
+
+Since we are interested in determining if the type of diet affects the weight of chicks 20 days after their birth, we consider the following hypothesis:
+$H_0:$ $\mu_1 = \mu_2 = \mu_3 = \mu_4$ vs.
+
+$H_1$ not all $\mu_i$ are equivalent for $i = 1,..,4$
+
+```{r}
+# (c). (Type your code in the space below, if any)
+anova_model = aov(weight ~ Diet - 1, data = chickweight_data)
+summary(anova_model) %>% pander()
+
+
+```
+Give a p-value < .05, we reject the null hypothesis at $\alpha = .05$, and conclude that there is a statistically significant difference in mean weight across the 4 different diets.
+	
+
+**(d) For the model fitted in (c), carry out necessary diagnostics to check if the model assumptions are valid. What are your findings?**
+
+<b> Solution: </b>  (Type your answer here)
+
+
+```{r}
+# (d). (Type your code in the space below, if any)
+anova_model$coefficients
+anova_resids = anova_model$residuals
+ggplot(data = chickweight_data, mapping = aes(x = anova_model$fitted.values, y = anova_resids))+
+  geom_point(alpha = .8)+
+  geom_hline(yintercept = 0, color = "red")+
+  ggtitle("Fitted Values vs. Residuals")+
+  xlab("Fitted Values")+ylab("Residuals")+
+  theme_minimal()+
+  theme(plot.title = element_text(size = 15, face = "bold"))
+```
+Based off purely visual inspection, there potentially appears to be a slight departure from the constant variance assumption. This can be problematic for inference drawn from p-values and test statistics,  so I consider the Levene test of constant variance:
+```{r}
+d_ij = abs(anova_model$residuals)
+summary(aov(d_ij ~ Diet, data = chickweight_data))
+
+```
+
+Constant variance assumption appears to be violated. It is difficult to say to what extent this is actually problematic though.
+
+Now to consider the assumption of the normally distributed error term:
+```{r}
+ggplot(data = chickweight_data, mapping = aes(anova_resids))+
+  geom_histogram(bins = 25, alpha = .8, fill = "dodgerblue2", color = "black")+
+  ggtitle("Histogram of Residuals")+
+  xlab("Residuals")+
+  theme_minimal()
+
+```
+The residuals here are very clearly right-skewed, and this is a considerable and problematic departure from normality. This may indicate the model is mis-specified (i.e., missing important explanatory variables). Such a departure from normality can also negatively impact the legitimacy of inference drawn from statistical tests on parameter estimates.
+
+
+
+
+**(e) Write down an appropriate two-way ANOVA model with fixed effect to answer the question whether there is any differences in growth rates across the four diet groups. Here the growth rate can be roughly seen as the effects of `Time` on `weight`. To receive full credits, you need to (i) write down the model, explain your notation, constraint(s) and/or assumptions; (ii) state the null and alternative hypotheses; (iii) state the test result. Hint: You may want to recycle the answer in (c) to save time. **
+
+
+<b> Solution: </b>  (Type your answer here)
+Here we consider the model (cell means form):
+$$
+Y_{ijk} = \mu_{ij} + \epsilon_{ijk}
+$$
+
+
+Similarly, the factor-effects form of the two-way ANOVA model:
+$$
+Y_{ijk} = \mu + \alpha_i + \beta_j + \epsilon_{ijk}
+$$
+where $\mu$ is the overall mean weight, $\alpha_i$ denotes the treatment effect of the $i^{th}$ diet on weight $i=1,...,4$, $\beta_j$ denotes the growth rate (aka, the effect of 'time') on `weight` (not sure what j is indexed up to), and $\epsilon_{ijk}$ is iid $N(0,\sigma^2)$ random error. ( think J is through 12)
+
+Both parameters are subject to the constraint that
+$$
+\sum_{i = 1}^{4}\alpha_i = \sum_{j=1}^{idk} \beta_j = 0
+$$
+
+We consider the Hypothesis that:
+$H_0:$ $\beta_j = 0$ for $j = 1,...,12$
+$H_1:$ at least one $\beta_j \neq 0$
+
+
+```{r}
+# (e). (Type your code in the space below, if any)
+two_way_model = aov(weight ~ Diet + as.factor(Time), data = chickweight_data)
+summary(two_way_model)
+
+
+```
+
+We reject the null hypothesis at $\alpha =.05$ in favor of the alternative hypothesis (p-value <.001), and conclude that the growth rate has an effect on weight, holding Diet group constant.
+
+Can we interpret this as: there is a significant difference in growth rates across the four diet groups? Doesn't seem right to me...
+
+***
+
+**(f) We want to take the chick-specific effect into account. The new mixed effect model is based on the model in (e), where `Time` is treated as a continuous covariate instead of a categorical factor, and a random intercept and a random slope (of `Time`) are added into the model. Report the fitted coefficients of the fixed effects, and summarize your findings from this model. Hint: You do not need to write down the new model, but you may find it helpful.  **
+
+<b> Solution: </b>  (Type your answer here)
+
+
+```{r}
+# (f). (Type your code in the space below, if any)
+
+
+#in general, fixed effects variables are just your good ol regular variables (specify them in the model formula like you're used to), but RANDOM effects go in the parentheses
+#http://bayes.acs.unt.edu:8083/BayesContent/class/Jon/Benchmarks/LinearMixedModels_JDS_Dec2010.pdf
+
+mixed_effect_model = lmer(weight ~ Diet + (Time|Chick), data = chickweight_data ) #basically this model is saying that the rate at which each chick grows (gains weight over time) varies by chick
+
+summary(mixed_effect_model)
+```
+
+```{r}
+fixef(mixed_effect_model)
+```
+
+It is evident that much (about 80%) of the random effect variance is explained by the Chick. Clearly, The Chick-specific effect is large and should be accounted for. In fact, once it is,  Diet4 is the only diet that has a statistically significant effect on weight.
+***
+
+**(g) Assume that the chicks in each diet are randomly selected from the same population, i.e., the enrollment of chicks is independent from any other factors. State the Stable Unit Treatment Value Assumption, write down the potential outcomes (weight at Day 20), and verify whether the randomization assumption holds.** 
+	
+<b> Solution: </b>  (Type your answer here)
+We have four potential outcomes:
+$$
+{Y_i(1), Y_i(2),  Y_i(3), Y_i(4)}
+$$
+
+![](/Users/collinkennedy/Dropbox/Screenshots/Screen Shot 2022-03-21 at 9.48.51 AM.png)
+
+$Y_i(1)$ denotes the $i^{th}$ chick having received the first diet,  $Y_i(2)$ denotes the $i^{th}$ chick having received the second diet, $Y_i(3)$ denotes the $i^{th}$ chick having received the third diet, and $Y_i(4)$ denotes the $i^{th}$ chick having received the $4^{th}$ diet.
+
+The Stable Unit Treatment Value Assumption has two main points:
+
+- 1). There is no interference among experimental units, i.e., one subject's treatment assignment does not affect another subjects outcome,
+
+- 2). There is consistency, such that there is no variation (hidden or otherwise) in the different levels of treatment assigned to experimental units. In other words, there is uniformity in each treatment level (only one version of each treatment).
+
+While we are not able to verify *2* after the fact, *1* implies independence. We can verify this by determining if there is any correlation between 
+
+
+***
+
+**LaTeX commands**
+
+$$Y_{i,j,k}, \mu, \alpha, \beta, \epsilon, i, j, H_0, H_a, \neq, =, \ldots$$
+
