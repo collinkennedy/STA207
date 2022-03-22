@@ -92,7 +92,7 @@ ggplot(data = chickweight_data, mapping = aes(x = Time, y = weight, colour = Die
 
 We consider the following one-way ANOVA model, first in cell-means form/notation:
 $$
-Y_{ij} = \mu_{i} + \epsilon_{ij},
+Y_{ij} = \mu_{i} + \epsilon_{ij},  \ \ \ i = 1,...,r;\ \ j=1,...,n_i
 $$
 
 Where $\mu_i$ represents the $i^th$ factor level mean, $Y_{ij}$ denoting the $j^{th}$ --- not sure --- I think the jth chick on the ith diet, and $\epsilon_{ijk}$ is random error which is iid $N(0,\sigma^2)$
@@ -279,13 +279,15 @@ $$
 
 $Y_i(1)$ denotes the $i^{th}$ chick having received the first diet,  $Y_i(2)$ denotes the $i^{th}$ chick having received the second diet, $Y_i(3)$ denotes the $i^{th}$ chick having received the third diet, and $Y_i(4)$ denotes the $i^{th}$ chick having received the $4^{th}$ diet.
 
-The Stable Unit Treatment Value Assumption has two main points:
+The Stable Unit Treatment Value Assumption has three main points:
 
 - 1). There is no interference among experimental units, i.e., one subject's treatment assignment does not affect another subjects outcome,
 
 - 2). There is consistency, such that there is no variation (hidden or otherwise) in the different levels of treatment assigned to experimental units. In other words, there is uniformity in each treatment level (only one version of each treatment).
 
-While we are not able to verify *2* after the fact, *1* implies independence. We can verify this by determining if there is any correlation between 
+- 3) the causal ordering is such that the treatment affects the outcome, but not the other way around
+
+
 
 
 ***
